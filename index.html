@@ -1176,7 +1176,11 @@
           </div>
           <button class="btn btn-secondary" onclick="clearDateFilter()" style="padding:7px 12px;font-size:12px;">✕ ล้าง</button>
         </div>
-        <input type="text" class="form-control" id="search-list" placeholder="🔍 ค้นหา..." style="width:180px;padding:7px 12px;" oninput="renderList()">
+        <div class="vendor-search-wrap" id="search-list-wrap" style="width:200px;">
+          <input type="text" class="form-control" id="search-list" placeholder="🔍 ค้นหา Vendor Code/Name..." style="width:200px;padding:7px 12px;" autocomplete="off"
+            oninput="onSearchListInput(this.value)" onkeydown="onSearchListKeydown(event)">
+          <div class="autocomplete-dropdown" id="search-list-dropdown"></div>
+        </div>
         <span id="list-count" style="font-size:12px;color:var(--text-muted);white-space:nowrap;"></span>
         <button class="btn btn-primary" onclick="exportData()" style="gap:6px;">📊 Export Excel</button>
       </div>
@@ -2308,6 +2312,18 @@ function splitMulti(str) {
   if (!str) return [];
   return String(str).split(',').map(s => s.trim()).filter(Boolean);
 }
+
+// ค้นหาจาก BookingID, Vendor Code, Vendor Name (แยกทีละตัวเผื่อมีหลาย Vendor คั่นด้วย comma), หรือ EXIM Number
+function bookingMatchesSearch(b, q) {
+  if (!q) return true;
+  if (b.id.toLowerCase().includes(q)) return true;
+  const codes = splitMulti(b.vendorCode);
+  const names = splitMulti(b.vendorName);
+  if (codes.some(c => c.toLowerCase().includes(q))) return true;
+  if (names.some(n => n.toLowerCase().includes(q))) return true;
+  if ((b.exims||[]).join(' ').toLowerCase().includes(q)) return true;
+  return false;
+}
 function renderVendorCodeCell(vendorCodeStr) {
   const codes = splitMulti(vendorCodeStr);
   if (!codes.length) return '-';
@@ -2341,8 +2357,7 @@ function renderList() {
   const filtered = bookings.filter(b => {
     const bDate = toYMD(b.pickupDate);
     const bType = b.bookingType || 'return';
-    const textMatch = !q || b.id.toLowerCase().includes(q) || b.vendorCode.toLowerCase().includes(q) ||
-      b.vendorName.toLowerCase().includes(q) || (b.exims||[]).join(' ').toLowerCase().includes(q);
+    const textMatch = bookingMatchesSearch(b, q);
     const fromMatch = !dateFrom || bDate >= dateFrom;
     const toMatch = !dateTo || bDate <= dateTo;
     const typeMatch = typeFilter === 'all' || bType === typeFilter;
@@ -2672,8 +2687,7 @@ function exportData() {
   const filtered = bookings.filter(b => {
     const bDate = toYMD(b.pickupDate);
     const bType = b.bookingType || 'return';
-    const textMatch = !q || b.id.toLowerCase().includes(q) || b.vendorCode.toLowerCase().includes(q) ||
-      b.vendorName.toLowerCase().includes(q) || (b.exims||[]).join(' ').toLowerCase().includes(q);
+    const textMatch = bookingMatchesSearch(b, q);
     const fromMatch = !dateFrom || bDate >= dateFrom;
     const toMatch = !dateTo || bDate <= dateTo;
     const typeMatch = typeFilter === 'all' || bType === typeFilter;
@@ -2900,6 +2914,78 @@ function clearDateFilter() {
   setDatePicker('filter-date-to', 'filter-date-to-display', '');
   renderList();
 }
+
+// ===== SEARCH BOX (หน้ารายการทั้งหมด): autocomplete ค้นหาจาก Vendor Code/Name เหมือนหน้าจองคิว =====
+let searchListDdItems = [];
+let searchListDdHighlight = -1;
+
+function onSearchListInput(val) {
+  const q = val.trim().toLowerCase();
+  const dd = document.getElementById('search-list-dropdown');
+
+  // อัปเดตรายการที่แสดงในตารางทันทีตามคำค้นหา (ค้นได้ทั้ง BookingID, Vendor Code, Vendor Name, EXIM)
+  renderList();
+
+  if (!q) { dd.classList.remove('open'); return; }
+
+  // แสดงคำแนะนำ Vendor ที่ตรงกับคำค้นหา (เหมือนช่อง Vendor Code ในหน้าจองคิว)
+  const results = VENDORS.filter(v =>
+    v.code.toLowerCase().includes(q) || v.name.toLowerCase().includes(q)
+  ).slice(0, 50);
+  searchListDdItems = results;
+  searchListDdHighlight = -1;
+
+  if (!results.length) {
+    dd.innerHTML = '<div class="no-results">ไม่พบ Vendor</div>';
+  } else {
+    dd.innerHTML = results.map((v,i) =>
+      `<div class="dropdown-item" data-idx="${i}" onmousedown="selectSearchListVendor('${v.code.replace(/'/g,"\\'")}', '${v.name.replace(/'/g,"\\'")}')">
+        <span class="code">${v.code}</span><span class="name">${v.name}</span>
+      </div>`
+    ).join('');
+  }
+  dd.classList.add('open');
+}
+
+function onSearchListKeydown(e) {
+  const dd = document.getElementById('search-list-dropdown');
+  if (!dd.classList.contains('open')) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    searchListDdHighlight = Math.min(searchListDdHighlight+1, searchListDdItems.length-1);
+    highlightSearchListDd();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    searchListDdHighlight = Math.max(searchListDdHighlight-1, 0);
+    highlightSearchListDd();
+  } else if (e.key === 'Enter' && searchListDdHighlight >= 0) {
+    e.preventDefault();
+    const v = searchListDdItems[searchListDdHighlight];
+    selectSearchListVendor(v.code, v.name);
+  } else if (e.key === 'Escape') {
+    dd.classList.remove('open');
+  }
+}
+
+function highlightSearchListDd() {
+  document.querySelectorAll('#search-list-dropdown .dropdown-item').forEach((el,i) => {
+    el.classList.toggle('highlighted', i === searchListDdHighlight);
+  });
+}
+
+function selectSearchListVendor(code, name) {
+  // เลือก Vendor จาก dropdown -> ใส่รหัส Vendor ลงช่องค้นหา แล้วกรองตารางทันที
+  document.getElementById('search-list').value = code;
+  document.getElementById('search-list-dropdown').classList.remove('open');
+  renderList();
+}
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#search-list-wrap')) {
+    const dd = document.getElementById('search-list-dropdown');
+    if (dd) dd.classList.remove('open');
+  }
+});
 </script>
 
 </body>
